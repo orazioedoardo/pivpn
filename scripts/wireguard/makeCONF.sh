@@ -27,11 +27,12 @@ err() {
 helpFunc() {
   echo "::: Create a client conf profile"
   echo ":::"
-  echo "::: Usage: pivpn <-a|add> [-n|--name <arg>] [-h|--help]"
+  echo "::: Usage: pivpn <-a|add> [-n|--name <arg>] [-ip|--client-ip <ipv4>] [-h|--help]"
   echo ":::"
   echo "::: Commands:"
   echo ":::  [none]               Interactive mode"
   echo ":::  -n,--name            Name for the Client (default: '${HOSTNAME}')"
+  echo ":::  -ip,--client-ip      IPv4 address of the Client"
   echo ":::  -h,--help            Show this help dialog"
 }
 
@@ -52,6 +53,9 @@ checkName() {
   elif [[ "${CLIENT_NAME::1}" == "." ]]; then
     err "Names cannot start with a . (dot)."
     exit 1
+  elif [[ "${#CLIENT_NAME}" -gt 15 ]]; then
+    err "::: Names cannot be longer than 15 characters."
+    exit 1
   elif [[ -z "${CLIENT_NAME}" ]]; then
     err "::: You cannot leave the name blank."
     exit 1
@@ -60,6 +64,18 @@ checkName() {
     exit 1
   elif [[ -f "configs/${CLIENT_NAME}.conf" ]]; then
     err "::: A client with this name already exists"
+    exit 1
+  fi
+}
+
+checkClientIP() {
+  local ip ipv4_regex
+  ip="$1"
+  ipv4_regex="^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}"
+  ipv4_regex+="(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
+
+  if [[ ! "${ip}" =~ $ipv4_regex ]]; then
+    err "::: Invalid IP: ${ip}"
     exit 1
   fi
 }
@@ -89,6 +105,20 @@ while [[ "$#" -gt 0 ]]; do
 
       CLIENT_NAME="${_val}"
       checkName
+      ;;
+    -ip | --client-ip | --client-ip=*)
+      _val="${_key##--client-ip=}"
+
+      if [[ "${_val}" == "${_key}" ]]; then
+        [[ "$#" -lt 2 ]] \
+          && err "::: Missing value for the optional argument '${_key}'." \
+          && exit 1
+
+        _val="${2}"
+        shift
+      fi
+
+      CLIENT_IP="${_val}"
       ;;
     -h | --help)
       helpFunc
@@ -125,16 +155,43 @@ if [ "$(wc -l configs/clients.txt | awk '{print $1}')" -ge "${MAX_CLIENTS}" ]; t
 fi
 
 # shellcheck disable=SC2154
-FIRST_IPV4_DEC="$(dotIPv4FirstDec "${pivpnNET}" "${subnetClass}")"
-LAST_IPV4_DEC="$(dotIPv4LastDec "${pivpnNET}" "${subnetClass}")"
+NETID_IPV4_DEC="$(dotIPv4FirstDec "${pivpnNET}" "${subnetClass}")"
+BROADCAST_IPV4_DEC="$(dotIPv4LastDec "${pivpnNET}" "${subnetClass}")"
 
-# Find an unused address for the client IP
-for ((ip = FIRST_IPV4_DEC + 2; ip <= LAST_IPV4_DEC - 1; ip++)); do
+FIRST_IPV4_DEC=$((NETID_IPV4_DEC + 2))
+LAST_IPV4_DEC=$((BROADCAST_IPV4_DEC - 1))
+FIRST_IPV4="$(decIPv4ToDot "${FIRST_IPV4_DEC}")"
+LAST_IPV4="$(decIPv4ToDot "${LAST_IPV4_DEC}")"
+
+if [[ -z "${CLIENT_IP}" ]]; then
+  read -p "Enter the Client IP from range ${FIRST_IPV4} - ${LAST_IPV4} (optional): " CLIENT_IP
+fi
+
+if [[ -n "${CLIENT_IP}" ]]; then
+  checkClientIP "${CLIENT_IP}"
+  ip="$(dotIPv4ToDec "${CLIENT_IP}")"
+
+  if [[ "${ip}" -lt "${FIRST_IPV4_DEC}" || "${ip}" -gt "${LAST_IPV4_DEC}" ]]; then
+    err "::: The specified IP ${CLIENT_IP} is not in range ${FIRST_IPV4} - ${LAST_IPV4}"
+    exit 1
+  fi
+
   if ! grep -q " ${ip}$" configs/clients.txt; then
     UNUSED_IPV4_DEC="${ip}"
-    break
+  else
+    err "::: IP address ${CLIENT_IP} is already in use"
+    exit 1
   fi
-done
+else
+  # Find an unused address for the client IP
+  for ((ip = FIRST_IPV4_DEC; ip <= LAST_IPV4_DEC; ip++)); do
+    if ! grep -q " ${ip}$" configs/clients.txt; then
+      UNUSED_IPV4_DEC="${ip}"
+      echo "::: Chosen Client IP: $(decIPv4ToDot "${ip}")"
+      break
+    fi
+  done
+fi
 
 if [[ -z "${CLIENT_NAME}" ]]; then
   read -r -p "Enter a Name for the Client: " CLIENT_NAME

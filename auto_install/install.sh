@@ -351,13 +351,14 @@ distroCheck() {
     . /etc/os-release
     PLAT="$(awk '{print $1}' <<< "${NAME}")"
     VER="${VERSION_ID}"
-    declare -A VER_MAP=(["10"]="buster"
+    declare -A VER_MAP=(
+      ["10"]="buster"
       ["11"]="bullseye"
       ["12"]="bookworm"
-      ["18.04"]="bionic"
       ["20.04"]="focal"
       ["22.04"]="jammy"
-      ["23.04"]="lunar")
+      ["24.04"]="noble"
+    )
     OSCN="${VER_MAP["${VER}"]}"
 
     # Alpine support
@@ -369,7 +370,7 @@ distroCheck() {
   case "${PLAT}" in
     Debian | Raspbian | Ubuntu)
       case "${OSCN}" in
-        stretch | buster | bullseye | bookworm | xenial | bionic | focal | jammy | lunar)
+        buster | bullseye | bookworm | focal | jammy | noble)
           :
           ;;
         *)
@@ -653,12 +654,15 @@ preconfigurePackages() {
   # wireguard-dkms does not make the module part of the package since the
   # module itself is built at install time and not part of the .deb).
   # Source: https://github.com/MichaIng/DietPi/blob/7bf5e1041f3b2972d7827c48215069d1c90eee07/dietpi/dietpi-software#L1807-L1815
+  # Additionally, if we're using something like LXC, the host kernel will load
+  # the wireguard module so it'll appear builtin from the container's point of view.
   WIREGUARD_BUILTIN=0
 
   if [[ "${PKG_MANAGER}" == 'apt-get' ]]; then
     if dpkg-query -S '/lib/modules/*/wireguard.ko*' &> /dev/null \
       || modinfo wireguard 2> /dev/null \
-      | grep -q '^filename:[[:blank:]]*(builtin)$'; then
+      | grep -q '^filename:[[:blank:]]*(builtin)$' \
+      || lsmod | grep -q '^wireguard'; then
       WIREGUARD_BUILTIN=1
     fi
   fi
@@ -3292,6 +3296,10 @@ confNetwork() {
 
   ${SUDO} sysctl -p /etc/sysctl.d/99-pivpn.conf > /dev/null
 
+  if [[ "${PLAT}" == 'Alpine' ]]; then
+	${SUDO} rc-update add sysctl
+  fi
+
   if [[ "${USING_UFW}" -eq 1 ]]; then
     echo "::: Detected UFW is enabled."
     echo "::: Adding UFW rules..."
@@ -3574,6 +3582,12 @@ confNetwork() {
       ${SUDO} ip6tables-save \
         | ${SUDO} tee /etc/iptables/rules.v6 > /dev/null
       ;;
+	Alpine)
+	  ${SUDO} rc-service iptables save
+	  ${SUDO} rc-service ip6tables save
+	  ${SUDO} rc-update add iptables
+	  ${SUDO} rc-update add ip6tables
+	  ;;
   esac
 
   {
